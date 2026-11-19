@@ -19,5 +19,31 @@ struct DuckApp: App {
             }
         }
         .defaultSize(width: 850, height: 1050)
+        .commands { ReaderCommands() }
+    }
+}
+
+struct ReaderCommands: Commands {
+    @FocusedValue(\.reader) private var reader
+    @FocusedValue(\.find) private var find
+
+    var body: some Commands {
+        CommandGroup(after: .textEditing) {
+            Button("Find…") { find?.run() }
+                .keyboardShortcut("f")
+                .disabled(find == nil)
+        }
+        CommandGroup(before: .toolbar) {
+            Button("Zoom In") { reader?.zoomIn() }
+                .keyboardShortcut("+")
+                .disabled(reader == nil)
+            Button("Zoom Out") { reader?.zoomOut() }
+                .keyboardShortcut("-")
+                .disabled(reader == nil)
+            Button("Fit Width") { reader?.fitWidth() }
+                .keyboardShortcut("0")
+                .disabled(reader == nil)
+            Divider()
+        }
     }
 }

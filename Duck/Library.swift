@@ -1,11 +1,18 @@
 import AppKit
 import Observation
+import OSLog
 
 struct PaperMeta: Codable, Equatable {
     var tags: [String] = []
     var added = Date()
     var lastPage = 0
     var opened: Date? // optional so library.json files written before this field still load
+    var highlights: [Highlight]?
+}
+
+struct Highlight: Codable, Equatable {
+    var page: Int
+    var rect: CGRect
 }
 
 struct Paper: Identifiable {
@@ -43,6 +50,7 @@ final class Library {
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         load()
         scan()
+        Log.library.notice("Opened library at \(folder.path, privacy: .public) with \(self.files.count) papers")
         let center = NotificationCenter.default
         center.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.scan() }
@@ -99,7 +107,7 @@ final class Library {
                 try FileManager.default.copyItem(at: source, to: url(for: name))
                 meta[name] = PaperMeta()
             } catch {
-                lastError = "Couldn't add \(source.lastPathComponent): \(error.localizedDescription)"
+                fail("Couldn't add \(source.lastPathComponent): \(error.localizedDescription)")
             }
         }
         save()
@@ -130,7 +138,7 @@ final class Library {
                 try FileManager.default.trashItem(at: url(for: id), resultingItemURL: nil)
                 meta[id] = nil
             } catch {
-                lastError = "Couldn't move \(id) to the Trash: \(error.localizedDescription)"
+                fail("Couldn't move \(id) to the Trash: \(error.localizedDescription)")
             }
         }
         save()
@@ -170,6 +178,16 @@ final class Library {
         save()
     }
 
+    /// Replaces the highlights on the given pages.
+    func setHighlights(_ id: String, _ pages: [Int: [CGRect]]) {
+        guard var m = meta[id] else { return }
+        var highlights = (m.highlights ?? []).filter { pages[$0.page] == nil }
+        for (page, rects) in pages { highlights += rects.map { Highlight(page: page, rect: $0) } }
+        m.highlights = highlights.sorted { ($0.page, -$0.rect.maxY) < ($1.page, -$1.rect.maxY) }
+        meta[id] = m
+        save()
+    }
+
     func setLastPage(_ id: String, _ page: Int) {
         guard meta[id] != nil, meta[id]?.lastPage != page else { return }
         meta[id]?.lastPage = page
@@ -189,7 +207,7 @@ final class Library {
             encoder.dateEncodingStrategy = .iso8601
             try encoder.encode(meta).write(to: metaURL, options: .atomic)
         } catch {
-            lastError = "Couldn't save the library: \(error.localizedDescription)"
+            fail("Couldn't save the library: \(error.localizedDescription)")
         }
     }
 
@@ -205,13 +223,21 @@ final class Library {
         }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        if let data, let decoded = try? decoder.decode([String: PaperMeta].self, from: data) {
-            meta = decoded
-        } else {
+        do {
+            guard let data else { throw coordinationError ?? CocoaError(.fileReadUnknown) }
+            meta = try decoder.decode([String: PaperMeta].self, from: data)
+        } catch {
             // Never overwrite a library file we couldn't read: that would wipe every tag.
             canSave = false
-            lastError = "Couldn't read library.json, so changes to tags won't be saved until it's fixed."
+            Log.library.fault("library.json unreadable: \(String(describing: error), privacy: .public)")
+            fail("Couldn't read library.json, so changes to tags won't be saved until it's fixed.")
         }
+    }
+
+    /// Shows an error in the library window and records it in the system log.
+    func fail(_ message: String) {
+        Log.library.error("\(message, privacy: .public)")
+        lastError = message
     }
 
     /// Waits for an iCloud file to finish downloading. Returns immediately for local files.
@@ -220,6 +246,7 @@ final class Library {
             try? FileManager.default.startDownloadingUbiquitousItem(at: url)
             var error: NSError?
             NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &error) { _ in }
+            if let error { Log.library.error("Couldn't download \(url.lastPathComponent, privacy: .public): \(error, privacy: .public)") }
         }.value
     }
 }

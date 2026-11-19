@@ -36,7 +36,7 @@ enum PageColor: String, CaseIterable, Identifiable {
 
 /// Paints the chosen page color onto each page as PDFKit draws it, as ordinary drawing, so it goes through the
 /// same color handling as the rest of the UI. PDF files are never changed.
-/// Never save a document made of these pages: PDFKit drops their content when writing. See `ReaderView.save`.
+/// Never save a document made of these pages: PDFKit drops their content when writing.
 final class TintedPage: PDFPage {
     // Read from PDFKit's render threads, written on the main thread when the user picks a color.
     nonisolated(unsafe) static var color: PageColor = .tan
@@ -81,26 +81,5 @@ extension PDFDocument {
         guard let document = PDFDocument(url: url) else { return nil }
         document.delegate = TintedPageProvider.shared
         return document
-    }
-}
-
-extension PDFDocument {
-    /// Saves the highlights on `pages` of the on-screen (tinted) document into the file at `url`.
-    /// Writes through a fresh plain copy of the file, because writing a TintedPage document loses page content.
-    static func saveHighlights(from display: PDFDocument, pages: [Int], to url: URL) throws {
-        guard let plain = PDFDocument(url: url), plain.pageCount == display.pageCount else {
-            throw CocoaError(.fileReadCorruptFile, userInfo: [NSLocalizedDescriptionKey: "The PDF on disk changed since it was opened."])
-        }
-        for index in pages {
-            guard let target = plain.page(at: index), let source = display.page(at: index) else { continue }
-            for annotation in target.annotations where annotation.type == "Highlight" { target.removeAnnotation(annotation) }
-            for annotation in source.annotations where annotation.type == "Highlight" {
-                if let copy = annotation.copy() as? PDFAnnotation { target.addAnnotation(copy) }
-            }
-        }
-        guard let data = plain.dataRepresentation() else {
-            throw CocoaError(.fileWriteUnknown, userInfo: [NSLocalizedDescriptionKey: "PDFKit couldn't write this PDF."])
-        }
-        try data.write(to: url, options: .atomic)
     }
 }

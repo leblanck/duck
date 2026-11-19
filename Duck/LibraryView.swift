@@ -1,3 +1,4 @@
+import OSLog
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -62,6 +63,7 @@ struct LibraryView: View {
                 .padding([.trailing, .bottom], 14)
         }
         .foregroundStyle(Theme.text)
+        .focusedSceneValue(\.find, openPaper == nil ? FindAction(name: "library") { searching = true; searchFocused = true } : nil)
         .toolbar(removing: .title)
         .toolbar { toolbar }
         .duckWindowStyle()
@@ -128,7 +130,6 @@ struct LibraryView: View {
                 } else {
                     Button { searching = true } label: { Image(systemName: "magnifyingglass") }
                         .buttonStyle(CircleButtonStyle())
-                        .keyboardShortcut("f")
                         .help("Search titles and tags (⌘F)")
                 }
             }
@@ -382,6 +383,7 @@ struct RenameSheet: View {
             onRenamed(try library.rename(id, to: title))
             dismiss()
         } catch {
+            Log.library.error("Rename of \(id, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
             self.error = error.localizedDescription
         }
     }
