@@ -3,7 +3,16 @@ import UniformTypeIdentifiers
 
 struct LibraryView: View {
     enum Filter: Hashable {
-        case all, untagged, tag(String)
+        case recent, all, untagged, tag(String)
+
+        var name: String {
+            switch self {
+            case .recent: "Recent"
+            case .all: "All papers"
+            case .untagged: "Untagged"
+            case .tag(let tag): tag
+            }
+        }
     }
 
     enum Sheet: Identifiable {
@@ -18,61 +27,55 @@ struct LibraryView: View {
 
     @Environment(Library.self) private var library
     @Environment(\.openWindow) private var openWindow
-    @State private var filter: Filter? = .all
+    @State private var filter = Filter.all
+    @State private var openPaper: String?
     @State private var selection = Set<String>()
     @State private var search = ""
-    @State private var sortOrder = [KeyPathComparator(\Paper.added, order: .reverse)]
+    @State private var searching = false
     @State private var sheet: Sheet?
     @State private var importing = false
+    @AppStorage("sidebarVisible") private var sidebarVisible = true
+    @FocusState private var searchFocused: Bool
 
     private var visiblePapers: [Paper] {
-        library.papers.filter { paper in
-            switch filter ?? .all {
-            case .all: true
-            case .untagged: paper.meta.tags.isEmpty
-            case .tag(let tag): paper.meta.tags.contains(tag)
-            }
+        let papers = library.papers
+        let filtered: [Paper] = switch filter {
+        case .recent:
+            Array(papers.filter { $0.meta.opened != nil }.sorted { $0.meta.opened! > $1.meta.opened! }.prefix(20))
+        case .all: papers.sorted { $0.added > $1.added }
+        case .untagged: papers.filter { $0.meta.tags.isEmpty }.sorted { $0.added > $1.added }
+        case .tag(let tag): papers.filter { $0.meta.tags.contains(tag) }.sorted { $0.added > $1.added }
         }
-        .filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.tagList.localizedCaseInsensitiveContains(search) }
-        .sorted(using: sortOrder)
+        guard !search.isEmpty else { return filtered }
+        return filtered.filter { $0.title.localizedCaseInsensitiveContains(search) || $0.tagList.localizedCaseInsensitiveContains(search) }
     }
 
     var body: some View {
-        NavigationSplitView {
-            List(selection: $filter) {
-                Label("All Papers", systemImage: "doc.on.doc").tag(Filter.all)
-                Label("Untagged", systemImage: "doc").tag(Filter.untagged)
-                if !library.allTags.isEmpty {
-                    Section("Tags") {
-                        ForEach(library.allTags, id: \.self) { tag in
-                            Label(tag, systemImage: "tag").tag(Filter.tag(tag))
-                                .contextMenu {
-                                    Button("Remove Tag from All Papers") {
-                                        if filter == .tag(tag) { filter = .all }
-                                        library.removeTag(tag)
-                                    }
-                                }
-                        }
-                    }
-                }
+        HStack(spacing: 0) {
+            if sidebarVisible {
+                sidebar.frame(width: 230)
             }
-            .navigationSplitViewColumnWidth(min: 160, ideal: 190)
-        } detail: {
-            table
+            panel
+                .background(Theme.panel)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .padding(.leading, sidebarVisible ? 0 : 14)
+                .padding([.trailing, .bottom], 14)
         }
-        .searchable(text: $search, prompt: "Search titles and tags")
-        .toolbar {
-            Button { importing = true } label: { Label("Add Papers", systemImage: "plus") }
-                .keyboardShortcut("o")
-                .help("Add PDFs to the library (⌘O)")
-        }
+        .foregroundStyle(Theme.text)
+        .toolbar(removing: .title)
+        .toolbar { toolbar }
+        .duckWindowStyle()
         .fileImporter(isPresented: $importing, allowedContentTypes: [.pdf], allowsMultipleSelection: true) { result in
             if case .success(let urls) = result { library.add(urls) }
         }
         .sheet(item: $sheet) { sheet in
             switch sheet {
-            case .tags(let ids): TagEditor(ids: ids)
-            case .rename(let id): RenameSheet(id: id, title: (id as NSString).deletingPathExtension)
+            case .tags(let ids):
+                TagEditor(ids: ids)
+            case .rename(let id):
+                RenameSheet(id: id, title: (id as NSString).deletingPathExtension) { newID in
+                    if openPaper == id { openPaper = newID }
+                }
             }
         }
         .alert("Something went wrong", isPresented: Binding(get: { library.lastError != nil }, set: { if !$0 { library.lastError = nil } })) {
@@ -81,41 +84,238 @@ struct LibraryView: View {
         }
     }
 
-    private var table: some View {
-        Table(visiblePapers, selection: $selection, sortOrder: $sortOrder) {
-            TableColumn("Title", value: \.title)
-            TableColumn("Tags", value: \.tagList) { Text($0.tagList).foregroundStyle(.secondary) }
-                .width(ideal: 160)
-            TableColumn("Added", value: \.added) { Text($0.added, format: .dateTime.year().month().day()) }
-                .width(ideal: 100)
-        }
-        .contextMenu(forSelectionType: String.self) { ids in
-            if !ids.isEmpty {
-                Button("Open") { ids.forEach { openWindow(value: $0) } }
-                Button("Edit Tags…") { sheet = .tags(ids) }
-                if ids.count == 1, let id = ids.first {
-                    Button("Rename…") { sheet = .rename(id) }
+    // MARK: Toolbar
+
+    @ToolbarContentBuilder
+    private var toolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            HStack(spacing: 10) {
+                crumb("My Library") { filter = .all; openPaper = nil }
+                Text("/").foregroundStyle(Theme.tertiary)
+                crumb(filter.name) { openPaper = nil }
+                    .keyboardShortcut("[", modifiers: .command)
+                if let openPaper {
+                    Text("/").foregroundStyle(Theme.tertiary)
+                    Text((openPaper as NSString).deletingPathExtension)
+                        .lineLimit(1).truncationMode(.middle)
+                        .frame(maxWidth: 360, alignment: .leading)
                 }
-                Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(ids.map(library.url(for:))) }
-                Divider()
-                Button("Move to Trash", role: .destructive) { library.trash(ids) }
             }
-        } primaryAction: { ids in
-            ids.forEach { openWindow(value: $0) }
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(Theme.text)
+            .padding(.leading, 8)
         }
-        .onDeleteCommand { library.trash(selection) }
-        .dropDestination(for: URL.self) { urls, _ in
-            library.add(urls)
-            return true
+        .sharedBackgroundVisibility(.hidden)
+
+        if openPaper == nil {
+            ToolbarItem {
+                Button { importing = true } label: { Label("Add paper", systemImage: "plus").labelStyle(.titleAndIcon) }
+                    .buttonStyle(PillButtonStyle())
+                    .keyboardShortcut("o")
+                    .help("Add PDFs to the library (⌘O)")
+            }
+            .sharedBackgroundVisibility(.hidden)
+            ToolbarItem {
+                if searching {
+                    TextField("Search", text: $search)
+                        .textFieldStyle(.plain)
+                        .focused($searchFocused)
+                        .padding(.horizontal, 12)
+                        .frame(width: 200, height: 32)
+                        .overlay(Capsule().strokeBorder(Theme.stroke, lineWidth: 1.5))
+                        .onExitCommand { search = ""; searching = false }
+                        .onAppear { searchFocused = true }
+                } else {
+                    Button { searching = true } label: { Image(systemName: "magnifyingglass") }
+                        .buttonStyle(CircleButtonStyle())
+                        .keyboardShortcut("f")
+                        .help("Search titles and tags (⌘F)")
+                }
+            }
+            .sharedBackgroundVisibility(.hidden)
         }
-        .overlay {
-            if library.papers.isEmpty {
-                ContentUnavailableView("No papers yet", systemImage: "doc.text",
-                                       description: Text("Drag PDFs here, or press ⌘O."))
-            } else if visiblePapers.isEmpty {
-                ContentUnavailableView.search
+        ToolbarItem {
+            Button { withAnimation(.easeOut(duration: 0.2)) { sidebarVisible.toggle() } } label: { Image(systemName: "sidebar.left") }
+                .buttonStyle(CircleButtonStyle())
+                .keyboardShortcut("s", modifiers: [.command, .control])
+                .help("Show or hide the sidebar (⌃⌘S)")
+        }
+        .sharedBackgroundVisibility(.hidden)
+    }
+
+    private func crumb(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(title, action: action).buttonStyle(.plain)
+    }
+
+    // MARK: Sidebar
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            sidebarRow(.recent)
+            sidebarRow(.all, count: library.papers.count)
+
+            Text("My library")
+                .font(.system(size: 14, weight: .semibold))
+                .padding(.top, 22).padding(.bottom, 6)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    sidebarRow(.untagged, dot: Theme.tertiary, count: library.papers.count { $0.meta.tags.isEmpty })
+                    ForEach(library.allTags, id: \.self) { tag in
+                        sidebarRow(.tag(tag), dot: Theme.color(for: tag), count: library.papers.count { $0.meta.tags.contains(tag) })
+                            .contextMenu {
+                                Button("Remove Tag from All Papers") {
+                                    if filter == .tag(tag) { filter = .all }
+                                    library.removeTag(tag)
+                                }
+                            }
+                    }
+                }
+            }
+            .scrollIndicators(.never)
+
+            Button { NSWorkspace.shared.open(library.folder) } label: {
+                Label("Library folder", systemImage: "folder")
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 14))
+            .foregroundStyle(Theme.secondary)
+            .help(library.folder.path)
+        }
+        .padding(.leading, 26).padding(.trailing, 20).padding(.top, 8).padding(.bottom, 18)
+    }
+
+    private func sidebarRow(_ row: Filter, dot: Color? = nil, count: Int? = nil) -> some View {
+        let selected = filter == row && openPaper == nil
+        return Button {
+            filter = row
+            openPaper = nil
+            selection = []
+        } label: {
+            HStack(spacing: 10) {
+                if let dot { Circle().fill(dot).frame(width: 10, height: 10) }
+                Text(row.name)
+                    .fontWeight(selected ? .semibold : .regular)
+                    .foregroundStyle(selected ? Theme.text : Theme.secondary)
+                    .lineLimit(1)
+                Spacer()
+                if let count { Text("\(count)").monospacedDigit().foregroundStyle(Theme.tertiary) }
+            }
+            .font(.system(size: 14))
+            .padding(.vertical, 5)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: Panel
+
+    @ViewBuilder
+    private var panel: some View {
+        if let openPaper {
+            ReaderView(id: openPaper).id(openPaper)
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 2) {
+                    ForEach(visiblePapers) { paper in
+                        PaperRow(paper: paper, selected: selection.contains(paper.id))
+                            .onTapGesture { tap(paper.id) }
+                            .contextMenu { menu(for: selection.contains(paper.id) ? selection : [paper.id]) }
+                    }
+                }
+                .padding(12)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay { emptyState }
+            .dropDestination(for: URL.self) { urls, _ in
+                library.add(urls)
+                return true
+            }
+            .onDeleteCommand { if !selection.isEmpty { library.trash(selection); selection = [] } }
+        }
+    }
+
+    /// Click opens a paper here; ⌘-click selects several for tagging or trashing.
+    private func tap(_ id: String) {
+        if NSEvent.modifierFlags.contains(.command) {
+            if selection.contains(id) { selection.remove(id) } else { selection.insert(id) }
+        } else {
+            selection = []
+            openPaper = id
+        }
+    }
+
+    @ViewBuilder
+    private func menu(for ids: Set<String>) -> some View {
+        if ids.count == 1, let id = ids.first {
+            Button("Open") { openPaper = id }
+            Button("Open in New Window") { openWindow(value: id) }
+        } else {
+            Button("Open in New Windows") { ids.forEach { openWindow(value: $0) } }
+        }
+        Divider()
+        Button(ids.count == 1 ? "Edit Tags…" : "Edit Tags for \(ids.count) Papers…") { sheet = .tags(ids) }
+        if ids.count == 1, let id = ids.first {
+            Button("Rename…") { sheet = .rename(id) }
+        }
+        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(ids.map(library.url(for:))) }
+        Divider()
+        Button("Move to Trash", role: .destructive) {
+            library.trash(ids)
+            selection.subtract(ids)
+        }
+    }
+
+    @ViewBuilder
+    private var emptyState: some View {
+        if visiblePapers.isEmpty {
+            VStack(spacing: 12) {
+                Image(systemName: library.papers.isEmpty ? "doc.text" : "magnifyingglass")
+                    .font(.system(size: 40, weight: .light))
+                    .foregroundStyle(Theme.tertiary)
+                Text(emptyMessage)
+                    .font(.system(size: 16))
+                    .foregroundStyle(Theme.secondary)
             }
         }
+    }
+
+    private var emptyMessage: String {
+        if library.papers.isEmpty { return "Drag PDFs here to start your library" }
+        if !search.isEmpty { return "No papers match “\(search)”" }
+        return filter == .recent ? "Papers you open will show up here" : "No papers here yet"
+    }
+}
+
+struct PaperRow: View {
+    let paper: Paper
+    let selected: Bool
+    @State private var hovering = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(paper.title)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(Theme.text)
+                .lineLimit(1)
+            HStack(spacing: 12) {
+                ForEach(paper.meta.tags, id: \.self) { tag in
+                    HStack(spacing: 5) {
+                        Circle().fill(Theme.color(for: tag)).frame(width: 7, height: 7)
+                        Text(tag)
+                    }
+                }
+                Text(paper.added, format: .dateTime.year().month().day())
+                    .foregroundStyle(Theme.tertiary)
+            }
+            .font(.system(size: 12))
+            .foregroundStyle(Theme.secondary)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(selected ? Theme.selected : hovering ? Theme.hover : .clear))
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
     }
 }
 
@@ -158,6 +358,7 @@ struct TagEditor: View {
 struct RenameSheet: View {
     let id: String
     @State var title: String
+    var onRenamed: (String) -> Void = { _ in }
     @Environment(Library.self) private var library
     @Environment(\.dismiss) private var dismiss
     @State private var error: String?
@@ -178,7 +379,7 @@ struct RenameSheet: View {
 
     private func apply() {
         do {
-            try library.rename(id, to: title)
+            onRenamed(try library.rename(id, to: title))
             dismiss()
         } catch {
             self.error = error.localizedDescription

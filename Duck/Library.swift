@@ -5,6 +5,7 @@ struct PaperMeta: Codable, Equatable {
     var tags: [String] = []
     var added = Date()
     var lastPage = 0
+    var opened: Date? // optional so library.json files written before this field still load
 }
 
 struct Paper: Identifiable {
@@ -105,12 +106,13 @@ final class Library {
         scan()
     }
 
-    func rename(_ id: String, to title: String) throws {
+    @discardableResult
+    func rename(_ id: String, to title: String) throws -> String {
         let clean = title.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
-        guard !clean.isEmpty else { return }
+        guard !clean.isEmpty else { return id }
         let newID = clean + ".pdf"
-        guard newID != id else { return }
+        guard newID != id else { return id }
         // Case-only renames hit the same file on macOS's case-insensitive disk, so they're allowed.
         if newID.lowercased() != id.lowercased(), FileManager.default.fileExists(atPath: url(for: newID).path) {
             throw CocoaError(.fileWriteFileExists, userInfo: [NSLocalizedDescriptionKey: "A paper named “\(clean)” already exists."])
@@ -119,6 +121,7 @@ final class Library {
         meta[newID] = meta.removeValue(forKey: id)
         save()
         scan()
+        return newID
     }
 
     func trash(_ ids: Set<String>) {
@@ -159,6 +162,12 @@ final class Library {
 
     func removeTag(_ tag: String) {
         updateTags(Set(meta.filter { $0.value.tags.contains(tag) }.keys), adding: [], removing: [tag])
+    }
+
+    func markOpened(_ id: String) {
+        guard meta[id] != nil else { return }
+        meta[id]?.opened = Date()
+        save()
     }
 
     func setLastPage(_ id: String, _ page: Int) {

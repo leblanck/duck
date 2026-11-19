@@ -9,6 +9,7 @@ struct ReaderView: View {
     @State private var failed = false
     @State private var controller = ReaderController()
     @State private var saveError: String?
+    @State private var choosingColor = false
 
     var body: some View {
         Group {
@@ -25,16 +26,21 @@ struct ReaderView: View {
         .frame(minWidth: 400, minHeight: 400)
         .navigationTitle((id as NSString).deletingPathExtension)
         .toolbar {
-            Picker("Page Color", selection: $pageColor) {
-                ForEach(PageColor.allCases) { Text($0.name).tag($0) }
+            ToolbarItem {
+                Button { choosingColor.toggle() } label: { Image(systemName: "circle.lefthalf.filled") }
+                    .buttonStyle(CircleButtonStyle())
+                    .help("Page color")
+                    .popover(isPresented: $choosingColor, arrowEdge: .bottom) { colorPicker }
             }
-            .help("Page color")
-            Button(action: highlight) {
-                Label("Highlight", systemImage: "highlighter")
+            .sharedBackgroundVisibility(.hidden)
+            ToolbarItem {
+                Button(action: highlight) { Image(systemName: "highlighter") }
+                    .buttonStyle(CircleButtonStyle())
+                    .keyboardShortcut("h", modifiers: [.command, .control])
+                    .help("Highlight selected text, or remove highlights it overlaps (⌃⌘H)")
+                    .disabled(document == nil)
             }
-            .keyboardShortcut("h", modifiers: [.command, .control])
-            .help("Highlight selected text, or remove highlights it overlaps (⌃⌘H)")
-            .disabled(document == nil)
+            .sharedBackgroundVisibility(.hidden)
         }
         .alert("Couldn't save highlight", isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
         } message: {
@@ -46,22 +52,45 @@ struct ReaderView: View {
             document = PDFDocument.tinted(url: url)
             failed = document == nil
             controller.pageChanged = { [library, id] page in library.setLastPage(id, page) }
+            if document != nil { library.markOpened(id) }
         }
     }
 
+    private var colorPicker: some View {
+        HStack(spacing: 14) {
+            ForEach(PageColor.allCases) { color in
+                Button {
+                    pageColor = color
+                    choosingColor = false
+                } label: {
+                    VStack(spacing: 6) {
+                        Circle()
+                            .fill(Color(red: color.paper.r, green: color.paper.g, blue: color.paper.b))
+                            .overlay(Text("Aa").font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Color(red: color.ink.r, green: color.ink.g, blue: color.ink.b)))
+                            .overlay(Circle().strokeBorder(color == pageColor ? Theme.accent : Theme.stroke,
+                                                           lineWidth: color == pageColor ? 2 : 1))
+                            .frame(width: 34, height: 34)
+                        Text(color.name).font(.system(size: 11)).foregroundStyle(Theme.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(14)
+    }
+
     private func highlight() {
-        guard let document, controller.toggleHighlight() else { return }
+        guard let document else { return }
+        let pages = controller.toggleHighlight()
+        guard !pages.isEmpty else { return }
         let url = library.url(for: id)
         // If the paper was renamed or deleted while open, don't recreate it under the old name.
         guard FileManager.default.fileExists(atPath: url.path) else {
             saveError = "The file was moved or renamed. Reopen it from the library."
             return
         }
-        guard let data = document.dataRepresentation() else {
-            saveError = "PDFKit couldn't write this PDF."
-            return
-        }
-        do { try data.write(to: url, options: .atomic) } catch { saveError = error.localizedDescription }
+        do { try PDFDocument.saveHighlights(from: document, pages: pages, to: url) } catch { saveError = error.localizedDescription }
     }
 }
 
@@ -70,9 +99,10 @@ final class ReaderController {
     var pageChanged: ((Int) -> Void)?
 
     /// Highlights the selected text, or removes the highlights the selection overlaps.
-    /// Returns true if the document changed.
-    func toggleHighlight() -> Bool {
-        guard let view = pdfView, let selection = view.currentSelection, !selection.pages.isEmpty else { return false }
+    /// Returns the indexes of the pages that changed.
+    func toggleHighlight() -> [Int] {
+        guard let view = pdfView, let document = view.document,
+              let selection = view.currentSelection, !selection.pages.isEmpty else { return [] }
 
         var removed = false
         for page in selection.pages {
@@ -92,7 +122,7 @@ final class ReaderController {
             }
         }
         view.clearSelection()
-        return true
+        return selection.pages.map { document.index(for: $0) }
     }
 }
 
