@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 @main
 struct DuckApp: App {
@@ -19,15 +20,26 @@ struct DuckApp: App {
             }
         }
         .defaultSize(width: 850, height: 1050)
-        .commands { ReaderCommands() }
+        .commands { ReaderCommands(library: library) }
     }
 }
 
 struct ReaderCommands: Commands {
+    let library: Library
     @FocusedValue(\.reader) private var reader
     @FocusedValue(\.find) private var find
 
     var body: some Commands {
+        // Replaces File > New Paper Window, which SwiftUI adds for the paper WindowGroup but can't open without a paper.
+        CommandGroup(replacing: .newItem) {
+            Button("Add PDF…") {
+                let panel = NSOpenPanel()
+                panel.allowedContentTypes = [.pdf]
+                panel.allowsMultipleSelection = true
+                if panel.runModal() == .OK { library.add(panel.urls) }
+            }
+            .keyboardShortcut("o")
+        }
         CommandGroup(after: .textEditing) {
             Button("Find…") { find?.run() }
                 .keyboardShortcut("f")

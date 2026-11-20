@@ -113,7 +113,6 @@ struct LibraryView: View {
             ToolbarItem {
                 Button { importing = true } label: { Label("Add paper", systemImage: "plus").labelStyle(.titleAndIcon) }
                     .buttonStyle(PillButtonStyle())
-                    .keyboardShortcut("o")
                     .help("Add PDFs to the library (⌘O)")
             }
             .sharedBackgroundVisibility(.hidden)
