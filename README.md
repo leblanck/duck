@@ -6,6 +6,8 @@ A minimal PDF reader for macOS, built for reading papers. It has a small tagged 
 
 Built with SwiftUI and PDFKit. No dependencies.
 
+![The Duck library window](duck_library_screenshot.png)
+
 ## Features
 
 - **Tan pages.** Pages are tinted as they're drawn, so white paper becomes the same warm tan as the window. Black text stays black. Other page colors: Sepia, White, and Dark (light text on near-black, for night reading). The PDF files themselves are never changed.
